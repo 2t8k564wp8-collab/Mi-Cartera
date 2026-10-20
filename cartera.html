@@ -17,6 +17,10 @@
     header { padding-top: calc(env(safe-area-inset-top) + 1rem); }
     /* 16px evita el zoom automático de iOS al tocar un campo */
     input, select { font-size: 16px !important; }
+    /* Solo desplazamiento vertical: nada se mueve de izquierda a derecha */
+    html, body { width: 100%; max-width: 100%; overflow-x: hidden; overscroll-behavior-x: none; touch-action: pan-y pinch-zoom; }
+    main, section, header { max-width: 100%; min-width: 0; }
+    #status, #key-state { overflow-wrap: anywhere; }
   </style>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen pb-24">
@@ -476,7 +480,7 @@
         const d = await r.json();
         if (!r.ok) {
           const m = (d.error && d.error.message) || ('Error ' + r.status);
-          throw new Error(r.status === 404 ? 'Modelo no encontrado. Cambia el nombre en Ajustes. (' + m + ')' : r.status === 429 ? 'Límite gratuito de Gemini alcanzado, reinténtalo más tarde.' : [400, 401, 403].includes(r.status) ? 'Clave rechazada o sin permiso: ' + m : m);
+          throw new Error(r.status === 404 ? 'Modelo no encontrado. Cambia el nombre en Ajustes. (' + m + ')' : r.status === 429 ? 'Gemini rechaza la consulta por límite de uso (429). Mensaje de Google: ' + String(m).slice(0, 400) : [400, 401, 403].includes(r.status) ? 'Clave rechazada o sin permiso: ' + m : m);
         }
         const c = d.candidates && d.candidates[0];
         const text = c && c.content && c.content.parts ? c.content.parts.map(x => x.text || '').join('').trim() : '';
