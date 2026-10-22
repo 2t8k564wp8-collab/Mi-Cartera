@@ -462,6 +462,14 @@
     }
     const richText = t => esc(t).replace(/^\s*[\*\-]\s+/gm, '• ').replace(/\*\*(.+?)\*\*/g, '<strong class="text-slate-100">$1</strong>').replace(/^#+\s*(.+)$/gm, '<strong class="text-slate-100">$1</strong>').replace(/\n/g, '<br>');
 
+    function callGemini(text, search, signal) {
+      const body = { contents: [{ role: 'user', parts: [{ text }] }] };
+      if (search) body.tools = [{ googleSearch: {} }];
+      return fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(gModel) + ':generateContent', {
+        method: 'POST', signal, headers: { 'Content-Type': 'application/json', 'x-goog-api-key': gKey }, body: JSON.stringify(body)
+      });
+    }
+
     async function analyzeTicker(t) {
       if (!gKey) { alert('Primero guarda tu clave de Gemini.'); openSettings(); return; }
       if (loadingSet[t]) return;
@@ -472,22 +480,23 @@
       const prompt = `Hoy es ${new Date().toLocaleDateString('es-ES')}. Eres un analista financiero que escribe para un inversor particular español. Apóyate en la búsqueda web para usar noticias y datos recientes. Activo: ${t} (${crypto ? 'criptomoneda' : 'acción o ETF'}). Precio actual aproximado: ${priceOf(pos[0]).toFixed(2)} €. Precio medio de compra del usuario: ${avg.toFixed(2)} €.\nEscribe en español, claro y breve (máximo 220 palabras), con estos apartados en negrita: **Por qué se mueve** (causas recientes del último movimiento del precio), **${crypto ? 'Proyecto y mercado' : 'La empresa'}**, **El sector** (si crece o decrece y por qué), **Perspectiva** (argumentos a favor y riesgos). Si no encuentras datos fiables, dilo; no inventes cifras. No digas que compre o venda.`;
       const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 60000);
       try {
-        const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(gModel) + ':generateContent', {
-          method: 'POST', signal: ctl.signal,
-          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': gKey },
-          body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }], tools: [{ googleSearch: {} }] })
-        });
-        const d = await r.json();
+        let noSearch = false;
+        let r = await callGemini(prompt, true, ctl.signal), d = await r.json();
+        if (r.status === 429) {   // si el cupo de la búsqueda de Google no está disponible, reintento sin búsqueda
+          noSearch = true;
+          r = await callGemini(prompt.replace('Apóyate en la búsqueda web para usar noticias y datos recientes.', 'No tienes acceso a noticias en directo: usa solo tu conocimiento y avisa claramente de que puede no reflejar los últimos movimientos.'), false, ctl.signal);
+          d = await r.json();
+        }
         if (!r.ok) {
           const m = (d.error && d.error.message) || ('Error ' + r.status);
-          throw new Error(r.status === 404 ? 'Modelo no encontrado. Cambia el nombre en Ajustes. (' + m + ')' : r.status === 429 ? 'Gemini rechaza la consulta por límite de uso (429). Mensaje de Google: ' + String(m).slice(0, 400) : [400, 401, 403].includes(r.status) ? 'Clave rechazada o sin permiso: ' + m : m);
+          throw new Error(r.status === 404 ? 'Modelo no encontrado. Cambia el nombre en Ajustes. (' + m + ')' : r.status === 429 ? 'Gemini rechaza la consulta por límite de uso (429). Mensaje de Google: ' + String(m).slice(0, 200) + ' · Revisa tu cupo en ai.dev/rate-limit o prueba otro modelo en Claves de API.' : [400, 401, 403].includes(r.status) ? 'Clave rechazada o sin permiso: ' + m : m);
         }
         const c = d.candidates && d.candidates[0];
         const text = c && c.content && c.content.parts ? c.content.parts.map(x => x.text || '').join('').trim() : '';
         if (!text) throw new Error('Gemini no devolvió texto.');
         const ch = (c.groundingMetadata && c.groundingMetadata.groundingChunks) || [];
         const sources = ch.map(x => x.web).filter(Boolean).slice(0, 3).map(w => ({ title: w.title || 'fuente', uri: w.uri }));
-        analysis[t] = { text, sources, ts: Date.now() };
+        analysis[t] = { text, sources, ts: Date.now(), noSearch };
       } catch (e) {
         analysis[t] = { ...(analysis[t] || {}), err: e.name === 'AbortError' ? 'Tiempo de espera agotado.' : (e.message || 'Sin conexión.') };
       } finally { clearTimeout(to); }
@@ -509,7 +518,7 @@
           if (has) {
             const src = (a.sources || []).filter(x => /^https:\/\//.test(x.uri)).map(x => `<a class="underline" href="${esc(x.uri)}" target="_blank" rel="noopener">${esc(x.title)}</a>`).join(' · ');
             body += `<div class="text-xs text-slate-300 leading-relaxed">${richText(a.text)}</div>` + (src ? `<p class="text-[11px] text-slate-500 mt-2">Fuentes: ${src}</p>` : '') +
-              `<p class="text-[11px] text-slate-500 mt-2">Generado el ${new Date(a.ts).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}. Información orientativa, no es una recomendación de inversión.</p>`;
+              `<p class="text-[11px] text-slate-500 mt-2">Generado el ${new Date(a.ts).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}. Información orientativa, no es una recomendación de inversión.</p>` + (a.noSearch ? '<p class="text-[11px] text-amber-400 mt-1">Sin búsqueda de noticias (no disponible ahora): se basa en el conocimiento del modelo y puede no reflejar los últimos movimientos.</p>' : '');
           }
           if (a && a.err) body += `<p class="text-xs text-amber-400 mt-2">${esc(a.err)}</p>`;
           body += `<button onclick="analyzeTicker('${t}')" class="mt-3 text-xs bg-indigo-600 text-white font-semibold px-3 py-2 rounded-xl">${has ? 'Actualizar análisis' : 'Generar análisis'}</button>`;
